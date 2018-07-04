@@ -1,8 +1,6 @@
 import os
-import re
+import sys
 import json
-import time
-import gzip
 import peewee
 import logging
 import requests
@@ -18,6 +16,8 @@ logger = logging.getLogger(__file__)
 logger.setLevel(logging.INFO)
 
 debug = bool(SETTINGS.get("debug", True))
+
+undefined = SETTINGS.get("undefined", "undefined")
 
 json_filename = SETTINGS.get("json_filename", "snyk.json")
 
@@ -54,7 +54,7 @@ database = peewee.PostgresqlDatabase(
 SOURCE_NAME = "msbulletin"
 SOURCE_FILE = "https://portal.msrc.microsoft.com/api/security-guidance/en-us/"
 CURRENT_PATH = os.path.dirname(os.path.realpath(__file__))
-GZIP_FILE = os.path.join(CURRENT_PATH,"../data/old_Microsoft_bulletins.gz")
+GZIP_FILE = os.path.join(CURRENT_PATH, "../data/old_Microsoft_bulletins.gz")
 
 
 def LOGINFO_IF_ENABLED(message="\n"):
@@ -79,6 +79,13 @@ def set_default(obj):
         return list(obj)
     raise TypeError
 
+def progress_bar(iteration, total, barLength=50, title="Processing: "):
+    percent = int(round((iteration / total) * 100))
+    nb_bar_fill = int(round((barLength * percent) / 100))
+    bar_fill = '#' * nb_bar_fill
+    bar_empty = ' ' * (barLength - nb_bar_fill)
+    sys.stdout.write(title + "\r  [{0}] {1}%".format(str(bar_fill + bar_empty), percent))
+    sys.stdout.flush()
 
 def get_msbulletin(url, from_date='01/01/1900', to_date=None):
     headers = {
@@ -117,7 +124,7 @@ def get_msbulletin(url, from_date='01/01/1900', to_date=None):
         else:
             return {}
     except Exception as ex:
-        LOGERR_IF_ENABLED("[e] Get an exceptino with MSBulletin download: {}".format(ex))
+        LOGERR_IF_ENABLED("[e] Get an exception with MSBulletin download: {}".format(ex))
         return {}
 
 def connect_database():
@@ -127,7 +134,7 @@ def connect_database():
             database.connect()
         else:
             pass
-        LOGVAR_IF_ENABLED("[+] Connect Postgress database")
+        LOGVAR_IF_ENABLED("[+] Connect Postgres database")
         return True
     except peewee.OperationalError as peewee_operational_error:
         LOGERR_IF_ENABLED("[e] Connect Postgres database error: {}".format(peewee_operational_error))
@@ -140,7 +147,7 @@ def disconnect_database():
             pass
         else:
             database.close()
-        LOGVAR_IF_ENABLED("[+] Disconnect Postgress database")
+        LOGVAR_IF_ENABLED("[+] Disconnect Postgres database")
         peewee.logger.disabled = False
         return True
     except peewee.OperationalError as peewee_operational_error:
@@ -171,23 +178,154 @@ def count_ms_table():
 
 def check_if_ms_exists_in_postgres(item_in_json):
     connect_database()
-    mss = []
-
-    return False, -1
+    sid = -1
+    if "cve_number" in item_in_json:
+        cve_number = item_in_json.get("cve_number")
+        knowledge_base_id = item_in_json.get("knowledge_base_id")
+        name = item_in_json.get("name")
+        article_title1 = item_in_json["article_title1"]
+        download_title1 = item_in_json["download_title1"]
+        article_title2 = item_in_json["article_title2"]
+        download_title2 = item_in_json["download_title2"]
+        if cve_number != "undefined":
+            mss = list(
+                MS.select().where(
+                    (MS.cve_number == cve_number) &
+                    (MS.knowledge_base_id == knowledge_base_id) &
+                    (MS.name == name) &
+                    (MS.article_title1 == article_title1) &
+                    (MS.article_title2 == article_title2) &
+                    (MS.download_title1 == download_title1) &
+                    (MS.download_title2 == download_title2)
+                )
+            )
+            disconnect_database()
+            if len(mss) == 0:
+                return False, sid
+            else:
+                return True, mss[0].to_json["id"]
 
 def create_ms_item_in_postgres(item_in_json):
     sid = -1
+    connect_database()
+    item_in_json["published_date"] = datetime.utcnow() if item_in_json["published_date"] == "undefined" else item_in_json["published_date"]
 
+    ms = MS(
+        published_date=item_in_json["published_date"],
+        cve_number=item_in_json["cve_number"],
+        cve_url=item_in_json["cve_url"],
+        name=item_in_json["name"],
+        platform=item_in_json["platform"],
+        family=item_in_json["family"],
+        impact_id=item_in_json["impact_id"],
+        impact=item_in_json["impact"],
+        severity_id=item_in_json["severity_id"],
+        severity=item_in_json["severity"],
+        knowledge_base_id=item_in_json["knowledge_base_id"],
+        knowledge_base_url=item_in_json["knowledge_base_url"],
+        monthly_knowledge_base_id=item_in_json["monthly_knowledge_base_id"],
+        monthly_knowledge_base_url=item_in_json["monthly_knowledge_base_url"],
+        download_url1=item_in_json["download_url1"],
+        download_title1=item_in_json["download_title1"],
+        download_url2=item_in_json["download_url2"],
+        download_title2=item_in_json["download_title2"],
+        download_url3=item_in_json["download_url3"],
+        download_title3=item_in_json["download_title3"],
+        download_url4=item_in_json["download_url4"],
+        download_title4=item_in_json["download_title4"],
+        article_title1=item_in_json["article_title1"],
+        article_url1=item_in_json["article_url1"],
+        article_title2=item_in_json["article_title2"],
+        article_url2=item_in_json["article_url2"],
+        article_title3=item_in_json["article_title3"],
+        article_url3=item_in_json["article_url3"],
+        article_title4=item_in_json["article_title4"],
+        article_url4=item_in_json["article_url4"],
+    )
+    ms.save()
+
+    disconnect_database()
     return sid
 
 def update_ms_item_in_postgres(item_in_json, sid):
-    # return "modified"
+    connect_database()
+    modified = False
+
+    ms = MS.get_by_id(sid)
+
+    if ms.cve_number != item_in_json["cve_number"] or \
+        ms.cve_url != item_in_json["cve_url"] or \
+        ms.name != item_in_json["name"] or \
+        ms.platform != item_in_json["platform"] or \
+        ms.family != item_in_json["family"] or \
+        ms.impact_id != item_in_json["impact_id"] or \
+        ms.impact != item_in_json["impact"] or \
+        ms.severity_id != item_in_json["severity_id"] or \
+        ms.severity != item_in_json["severity"] or \
+        ms.knowledge_base_id != item_in_json["knowledge_base_id"] or \
+        ms.knowledge_base_url != item_in_json["knowledge_base_url"] or \
+        ms.monthly_knowledge_base_id != item_in_json["monthly_knowledge_base_id"] or \
+        ms.monthly_knowledge_base_url != item_in_json["monthly_knowledge_base_url"] or \
+        ms.download_url1 != item_in_json["download_url1"] or \
+        ms.download_title1 != item_in_json["download_title1"] or \
+        ms.download_url2 != item_in_json["download_url2"] or \
+        ms.download_title2 != item_in_json["download_title2"] or \
+        ms.download_url3 != item_in_json["download_url3"] or \
+        ms.download_title3 != item_in_json["download_title3"] or \
+        ms.download_url4 != item_in_json["download_url4"] or \
+        ms.download_title4 != item_in_json["download_title4"] or \
+        ms.article_url1 != item_in_json["article_url1"] or \
+        ms.article_title1 != item_in_json["article_title1"] or \
+        ms.article_url2 != item_in_json["article_url2"] or \
+        ms.article_title2 != item_in_json["article_title2"] or \
+        ms.article_url3 != item_in_json["article_url3"] or \
+        ms.article_title3 != item_in_json["article_title3"] or \
+        ms.article_url4 != item_in_json["article_url4"] or \
+            ms.article_title4 != item_in_json["article_title4"]:
+        modified = True
+
+    if modified:
+        item_in_json["published_date"] = datetime.utcnow() if item_in_json["published_date"] == "undefined" else item_in_json["published_date"]
+        ms.cve_number = item_in_json["cve_number"]
+        ms.cve_url = item_in_json["cve_url"]
+        ms.name = item_in_json["name"]
+        ms.platform = item_in_json["platform"]
+        ms.family = item_in_json["family"]
+        ms.impact_id = item_in_json["impact_id"]
+        ms.impact = item_in_json["impact"]
+        ms.severity_id = item_in_json["severity_id"]
+        ms.severity = item_in_json["severity"]
+        ms.knowledge_base_id = item_in_json["knowledge_base_id"]
+        ms.knowledge_base_url = item_in_json["knowledge_base_url"]
+        ms.monthly_knowledge_base_id = item_in_json["monthly_knowledge_base_id"]
+        ms.monthly_knowledge_base_url = item_in_json["monthly_knowledge_base_url"]
+        ms.download_url1 = item_in_json["download_url1"]
+        ms.download_title1 = item_in_json["download_title1"]
+        ms.download_url2 = item_in_json["download_url2"]
+        ms.download_title2 = item_in_json["download_title2"]
+        ms.download_url3 = item_in_json["download_url3"]
+        ms.download_title3 = item_in_json["download_title3"]
+        ms.download_url4 = item_in_json["download_url4"]
+        ms.download_title4 = item_in_json["download_title4"]
+        ms.article_url1 = item_in_json["article_url1"]
+        ms.article_title1 = item_in_json["article_title1"]
+        ms.article_url2 = item_in_json["article_url2"]
+        ms.article_title2 = item_in_json["article_title2"]
+        ms.article_url3 = item_in_json["article_url3"]
+        ms.article_title3 = item_in_json["article_title3"]
+        ms.article_url4 = item_in_json["article_url4"]
+        ms.article_title4 = item_in_json["article_title4"]
+        ms.save()
+
+    disconnect_database()
+    if modified:
+        return "modified"
     return "skipped"
 
 def create_of_update_ms_item_in_postgres(item_in_json):
     exists, sid = check_if_ms_exists_in_postgres(item_in_json)
     if exists and sid != -1:
-        result = update_ms_item_in_postgres(item_in_json)
+        result = update_ms_item_in_postgres(item_in_json, sid)
         return result, sid
     elif not exists and sid == -1:
         sid = create_ms_item_in_postgres(item_in_json)
@@ -197,86 +335,143 @@ def update_ms_vulners():
     data_json = get_msbulletin(SOURCE_FILE)
     if isinstance(data_json, dict):
         count = data_json.get("count", 0)
-        LOGINFO_IF_ENABLED("[+] Get {} vilnerabilities from MS database".format(count))
+        LOGINFO_IF_ENABLED("[+] Get {} vulnerabilities from MS database".format(count))
+        # with open("ms.json", "w") as mf:
+        #     json.dump(data_json, mf)
         if count > 0:
             details = data_json.get("details", [])
             if len(details) != 0:
-                # parse
                 created = []
                 modified = []
                 skipped = []
                 for item_in_details in details:
+
                     item_in_json = dict()
-                    item_in_json["published_date"] = item_in_details.get("publishedDate", datetime.utcnow())
-                    item_in_json["cve_number"] = item_in_details.get("cveNumber", "undefined")
-                    item_in_json["cve_url"] = item_in_details.get("cveUrl", "undefined")
-                    item_in_json["name"] = item_in_details.get("name", "undefined")
+
+                    item_in_json["published_date"] = item_in_details.get("publishedDate", undefined)
+
+                    item_in_json["cve_number"] = item_in_details.get("cveNumber", undefined)
+
+                    item_in_json["cve_url"] = item_in_details.get("cveUrl", undefined)
+
+                    item_in_json["name"] = item_in_details.get("name", undefined)
+
                     item_in_json["platform"] = item_in_details.get("platform", None)
                     if item_in_json["platform"] is None:
-                        item_in_json["platform"] = "undefined"
+                        item_in_json["platform"] = undefined
+
                     item_in_json["family"] = item_in_details.get("family", None)
-                    if item_in_json["family"] is None:
-                        item_in_json["family"] = None
+                    if item_in_json["family"] is None or item_in_json["family"] == "":
+                        item_in_json["family"] = undefined
+
                     item_in_json["impact_id"] = item_in_details.get("impactId", None)
-                    if item_in_json["impact_id"] is None:
-                        item_in_json["impact_id"] = "undefined"
+                    if item_in_json["impact_id"] is None or item_in_json["impact_id"] == "":
+                        item_in_json["impact_id"] = undefined
+
                     item_in_json["impact"] = item_in_details.get("impact", None)
-                    if item_in_json["impact"] is None:
-                        item_in_json["impact"] = "undefined"
+                    if item_in_json["impact"] is None or item_in_json["impact"] == "":
+                        item_in_json["impact"] = undefined
+
                     item_in_json["severity_id"] = item_in_details.get("severityId", None)
-                    if item_in_json["severity_id"] is None:
-                        item_in_json["severity_id"] = "indefined"
+                    if item_in_json["severity_id"] is None or item_in_json["severity_id"] == "":
+                        item_in_json["severity_id"] = undefined
+
                     item_in_json["severity"] = item_in_details.get("severity", None)
-                    if item_in_json["severity"] is None:
-                        item_in_json["severity"] = "undefined"
+                    if item_in_json["severity"] is None or item_in_json["severity"] == "":
+                        item_in_json["severity"] = undefined
+
                     item_in_json["knowledge_base_id"] = item_in_details.get("knowledgeBaseId", None)
-                    if item_in_json["knowledge_base_id"] is None:
-                        item_in_json["knowledge_base_id"] = "undefined"
+                    if item_in_json["knowledge_base_id"] is None or item_in_json["knowledge_base_id"] == "":
+                        item_in_json["knowledge_base_id"] = undefined
+
                     item_in_json["knowledge_base_url"] = item_in_details.get("knowledgeBaseUrl", None)
-                    if item_in_json["knowledge_base_url"] is None:
-                        item_in_json["knowledge_base_url"] = "undefined"
+                    if item_in_json["knowledge_base_url"] is None or ' ' in item_in_json["knowledge_base_url"]:
+                        item_in_json["knowledge_base_url"] = undefined
+
                     item_in_json["monthly_knowledge_base_id"] = item_in_details.get("monthlyKnowledgeBaseId", None)
-                    if item_in_json["monthly_knowledge_base_id"] is None:
-                        item_in_json["monthly_knowledge_base_id"] = "undefined"
+                    if item_in_json["monthly_knowledge_base_id"] is None or item_in_json["monthly_knowledge_base_id"] == "":
+                        item_in_json["monthly_knowledge_base_id"] = undefined
+
                     item_in_json["monthly_knowledge_base_url"] = item_in_details.get("monthlyKnowledgeBaseUrl", None)
-                    if item_in_json["monthly_knowledge_base_url"] is None:
-                        item_in_json["monthly_knowledge_base_url"] = "undefined"
-                    item_in_json["does_row_one_have_at_least_one_article_or_url"] = item_in_details.get("doesRowOneHaveAtLeastOneArticleOrUrl", False)
-                    item_in_json["does_row_two_have_at_least_one_article_or_url"] = item_in_details.get("doesRowTwoHaveAtLeastOneArticleOrUrl", False)
-                    item_in_json["does_row_three_have_at_least_one_article_or_url"] = item_in_details.get("doesRowThreeHaveAtLeastOneArticleOrUrl", False)
-                    item_in_json["does_row_four_have_at_least_one_article_or_url"] = item_in_details.get("doesRowFourHaveAtLeastOneArticleOrUrl", False)
-                    item_in_json["count_of_rows_with_at_least_one_article_or_url"] = item_in_details.get("countOfRowsWithAtLeastOneArticleOrUrl", 0)
-                    download_url = []
-                    download_title = []
-                    article_title = []
-                    article_url = []
-                    if item_in_json["does_row_one_have_at_least_one_article_or_url"]:
-                        article_title.append(item_in_details.get("articleTitle1", ""))
-                        article_url.append(item_in_details.get("articleUrl1", ""))
-                        download_title.append(item_in_details.get("downloadTitle1", ""))
-                        download_url.append(item_in_details.get("downloadUrl1", ""))
-                    if item_in_json["does_row_two_have_at_least_one_article_or_url"]:
-                        article_title.append(item_in_details.get("articleTitle2", ""))
-                        article_url.append(item_in_details.get("articleUrl2", ""))
-                        download_title.append(item_in_details.get("downloadTitle2", ""))
-                        download_url.append(item_in_details.get("downloadUrl2", ""))
-                    if item_in_json["does_row_three_have_at_least_one_article_or_url"]:
-                        article_title.append(item_in_details.get("articleTitle3", ""))
-                        article_url.append(item_in_details.get("articleUrl3", ""))
-                        download_title.append(item_in_details.get("downloadTitle3", ""))
-                        download_url.append(item_in_details.get("downloadUrl3", ""))
-                    if item_in_json["does_row_four_have_at_least_one_article_or_url"]:
-                        article_title.append(item_in_details.get("articleTitle4", ""))
-                        article_url.append(item_in_details.get("articleUrl4", ""))
-                        download_title.append(item_in_details.get("downloadTitle4", ""))
-                        download_url.append(item_in_details.get("downloadUrl4", ""))
-                    item_in_json["download_url"] = download_url
-                    item_in_json["download_title"] = download_title
-                    item_in_json["article_url"] = article_url
-                    item_in_json["article_title"] = article_title
+                    if item_in_json["monthly_knowledge_base_url"] is None or ' 'in item_in_json["monthly_knowledge_base_url"]:
+                        item_in_json["monthly_knowledge_base_url"] = undefined
+
+                    item_in_json["article_title1"] = item_in_details.get("articleTitle1", None)
+                    if item_in_json["article_title1"] is None or item_in_json["article_title1"] == "":
+                        item_in_json["article_title1"] = undefined
+
+                    item_in_json["article_url1"] = item_in_details.get("articleUrl1", None)
+                    if item_in_json["article_url1"] is None or ' ' in item_in_json["article_url1"]:
+                        item_in_json["article_url1"] = undefined
+
+                    item_in_json["article_title2"] = item_in_details.get("articleTitle2", None)
+                    if item_in_json["article_title2"] is None or item_in_json["article_title2"] == "":
+                        item_in_json["article_title2"] = undefined
+
+                    item_in_json["article_url2"] = item_in_details.get("articleUrl2", None)
+                    if item_in_json["article_url2"] is None or ' ' in item_in_json["article_url2"]:
+                        item_in_json["article_url2"] = undefined
+
+                    item_in_json["article_title3"] = item_in_details.get("articleTitle3", None)
+                    if item_in_json["article_title3"] is None or item_in_json["article_title3"] == "":
+                        item_in_json["article_title3"] = undefined
+
+                    item_in_json["article_url3"] = item_in_details.get("articleUrl3", None)
+                    if item_in_json["article_url3"] is None or ' ' in item_in_json["article_url3"]:
+                        item_in_json["article_url3"] = undefined
+
+                    item_in_json["article_title4"] = item_in_details.get("articleTitle4", None)
+                    if item_in_json["article_title4"] is None or item_in_json["article_title4"] == "":
+                        item_in_json["article_title4"] = undefined
+
+                    item_in_json["article_url4"] = item_in_details.get("articleUrl4", None)
+                    if item_in_json["article_url4"] is None or ' ' in item_in_json["article_url4"]:
+                        item_in_json["article_url4"] = undefined
+
+                    item_in_json["download_title1"] = item_in_details.get("downloadTitle1", None)
+                    if item_in_json["download_title1"] is None or item_in_json["download_title1"]:
+                        item_in_json["download_title1"] = undefined
+
+                    item_in_json["download_url1"] = item_in_details.get("downloadUrl1", None)
+                    if item_in_json["download_url1"] is None or ' ' in item_in_json["download_url1"]:
+                        item_in_json["download_url1"] = undefined
+
+                    item_in_json["download_title2"] = item_in_details.get("downloadTitle2", None)
+                    if item_in_json["download_title2"] is None or item_in_json["download_title2"] == "":
+                        item_in_json["download_title2"] = undefined
+
+                    item_in_json["download_url2"] = item_in_details.get("downloadUrl2", None)
+                    if item_in_json["download_url2"] is None or ' ' in item_in_json["download_url2"]:
+                        item_in_json["download_url2"] = undefined
+
+                    item_in_json["download_title3"] = item_in_details.get("downloadTitle3", None)
+                    if item_in_json["download_title3"] is None or item_in_json["download_title3"] == "":
+                        item_in_json["download_title3"] = undefined
+
+                    item_in_json["download_url3"] = item_in_details.get("downloadUrl3", None)
+                    if item_in_json["download_url3"] is None or ' ' in item_in_json["download_url3"]:
+                        item_in_json["download_url3"] = undefined
+
+                    item_in_json["download_title4"] = item_in_details.get("downloadTitle4", None)
+                    if item_in_json["download_title4"] is None or item_in_json["download_title4"] == "":
+                        item_in_json["download_title4"] = undefined
+
+                    item_in_json["download_url4"] = item_in_details.get("downloadUrl4", None)
+                    if item_in_json["download_url4"] is None or ' ' in item_in_json["download_url4"]:
+                        item_in_json["download_url4"] = undefined
 
                     result, sid = create_of_update_ms_item_in_postgres(item_in_json)
 
+                    if result == "created":
+                        created.append(item_in_json)
+                    elif result == "modified":
+                        modified.append(item_in_json)
+                    else:
+                        skipped.append(item_in_json)
+
+                LOGINFO_IF_ENABLED("[+] Create {} vulnerabilities".format(len(created)))
+                LOGINFO_IF_ENABLED("[+] Modify {} vulnerabilities".format(len(modified)))
+                LOGINFO_IF_ENABLED("[+] Skip   {} vulnerabilities".format(len(skipped)))
             else:
                     LOGERR_IF_ENABLED("[e] Get empty data set from MS source")
         else:
