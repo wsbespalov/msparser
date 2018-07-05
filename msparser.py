@@ -183,20 +183,38 @@ def check_if_ms_exists_in_postgres(item_in_json):
         cve_number = item_in_json.get("cve_number")
         knowledge_base_id = item_in_json.get("knowledge_base_id")
         name = item_in_json.get("name")
-        article_title1 = item_in_json["article_title1"]
-        download_title1 = item_in_json["download_title1"]
-        article_title2 = item_in_json["article_title2"]
-        download_title2 = item_in_json["download_title2"]
+        family = item_in_json.get("family")
+        severity = item_in_json.get("severity")
+        impact_id = item_in_json.get("impact_id")
+        article_title1 = item_in_json.get("article_title1")
+        download_title1 = item_in_json.get("download_title1")
+        article_title2 = item_in_json.get("article_title2")
+        download_title2 = item_in_json.get("download_title2")
+        article_title3 = item_in_json.get("article_title3")
+        download_title3 = item_in_json.get("download_title3")
+        article_title4 = item_in_json.get("article_title4")
+        download_title4 = item_in_json.get("download_title4")
+        knowledge_base_id = item_in_json.get("knowledge_base_id")
+        monthly_knowledge_base_id = item_in_json.get("monthly_knowledge_base_id")
         if cve_number != "undefined":
             mss = list(
                 MS.select().where(
                     (MS.cve_number == cve_number) &
                     (MS.knowledge_base_id == knowledge_base_id) &
                     (MS.name == name) &
+                    (MS.family == family) &
+                    (MS.severity == severity) &
+                    (MS.impact_id == impact_id) &
                     (MS.article_title1 == article_title1) &
                     (MS.article_title2 == article_title2) &
+                    (MS.article_title3 == article_title3) &
+                    (MS.article_title4 == article_title4) &
                     (MS.download_title1 == download_title1) &
-                    (MS.download_title2 == download_title2)
+                    (MS.download_title2 == download_title2) &
+                    (MS.download_title3 == download_title3) &
+                    (MS.download_title4 == download_title4) &
+                    (MS.knowledge_base_id == knowledge_base_id) &
+                    (MS.monthly_knowledge_base_id == monthly_knowledge_base_id)
                 )
             )
             disconnect_database()
@@ -473,7 +491,7 @@ def update_ms_vulners():
                 LOGINFO_IF_ENABLED("[+] Modify {} vulnerabilities".format(len(modified)))
                 LOGINFO_IF_ENABLED("[+] Skip   {} vulnerabilities".format(len(skipped)))
             else:
-                    LOGERR_IF_ENABLED("[e] Get empty data set from MS source")
+                LOGERR_IF_ENABLED("[e] Get empty data set from MS source")
         else:
             LOGERR_IF_ENABLED("[e] Get 0 items from MS source")
     else:
